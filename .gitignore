@@ -1,0 +1,58 @@
+# Python bytecode and package/build output
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments and local tooling
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.direnv/
+.python-version.local
+
+# Test, type-check, and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter runtime state (keep source notebooks versionable)
+.ipynb_checkpoints/
+
+# Local single-cell datasets and generated plots
+data/
+figures/
+outputs/
+*.h5ad
+*.h5
+*.loom
+*.zarr/
+
+# Logs, editor/OS files, and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local indexing and prompt-packing artifacts
+.gitnexus/
+.claude/
+CLAUDE.md
+repomix-output.xml
