@@ -35,6 +35,7 @@ htmlcov/
 data/
 figures/
 outputs/
+examples/output/
 *.h5ad
 *.h5
 *.loom

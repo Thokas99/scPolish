@@ -3,8 +3,9 @@
 import matplotlib.pyplot as plt
 from anndata import AnnData
 from matplotlib.axes import Axes
+from matplotlib.collections import PathCollection
 
-from scpolish._utils.style import style_context
+from scpolish._utils.style import auto_point_size, style_context
 
 
 def embedding(
@@ -12,12 +13,14 @@ def embedding(
     basis: str = "umap",
     color: str | None = None,
     ax: Axes | None = None,
-    figsize: tuple[float, float] = (6, 5),
+    figsize: tuple[float, float] | None = None,
     title: str | None = None,
     size: float | None = None,
-    raster: bool = True,
+    raster: bool = False,
 ) -> Axes:
     """Plot an AnnData embedding with Scanpy and return its Matplotlib axes."""
+    if not isinstance(raster, bool):
+        raise ValueError("raster must be a boolean.")
     basis_key = basis.removeprefix("X_")
     obsm_key = f"X_{basis_key}"
     if obsm_key not in adata.obsm:
@@ -27,8 +30,9 @@ def embedding(
         raise ValueError(
             f"Embedding {basis!r} not found in adata.obsm. Available: {available}"
         )
+    fill_panel = figsize is not None or ax is not None
     if ax is None:
-        _, ax = plt.subplots(figsize=figsize)
+        _, ax = plt.subplots(figsize=figsize or (6, 5))
 
     color_keys = [color]
     backups = {}
@@ -53,7 +57,7 @@ def embedding(
                 ax=ax,
                 show=False,
                 return_fig=False,
-                size=size,
+                size=size if size is not None else auto_point_size(adata.n_obs),
                 title=title,
             )
     finally:
@@ -62,7 +66,8 @@ def embedding(
                 adata.uns.pop(key, None)
             else:
                 adata.uns[key] = value
-    if raster:
-        for collection in ax.collections:
-            collection.set_rasterized(True)
+    for collection in ax.collections:
+        if isinstance(collection, PathCollection):
+            collection.set_rasterized(raster)
+    ax.set_aspect("auto" if fill_panel else "equal")
     return ax

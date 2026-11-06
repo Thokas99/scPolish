@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from scpolish.pl import dimplot, featureplot, violinplot
 from scpolish.plotting import embedding
 
 try:
@@ -9,4 +10,4 @@ try:
 except PackageNotFoundError:
     __version__ = "0.1.0.dev0"
 
-__all__ = ["embedding", "__version__"]
+__all__ = ["embedding", "dimplot", "featureplot", "violinplot", "__version__"]
