@@ -39,12 +39,30 @@ def test_exports_and_single_feature(adata):
     assert isinstance(scp.violinplot(adata, "gene0", "cell_type"), Axes)
 
 
+def test_paired_lines_preserve_missing_category_gaps(adata):
+    adata.obs["donor"] = "demo"
+    adata.obs.loc[adata.obs["cell_type"] == "B", "score"] = np.nan
+    ax = scp.violinplot(adata, "score", "cell_type", paired_by="donor")
+    trajectory = next(line for line in ax.lines if line.get_linewidth() == 0.45)
+    assert np.isnan(trajectory.get_ydata()[1])
+
+
 def test_multiple_features_form_requested_grid(adata):
     fig, axes = scp.violinplot(adata, ["gene0", "gene1", "gene2"], "cell_type", ncols=2)
     assert isinstance(fig, Figure)
     assert axes.shape == (2, 2)
     assert not axes[1, 1].get_visible()
     assert tuple(fig.get_size_inches()) == (11, 9)
+
+
+@pytest.mark.parametrize(
+    "count,shape", [(2, (1, 2)), (4, (2, 2)), (6, (2, 3)), (9, (3, 3))]
+)
+def test_publication_layout_defaults(adata, count, shape):
+    for i in range(count):
+        adata.obs[f"layout_{i}"] = np.arange(adata.n_obs, dtype=float)
+    result = scp.violinplot(adata, [f"layout_{i}" for i in range(count)], "cell_type")
+    assert result[1].shape == shape
 
 
 def test_stacked_features_share_categories_and_return_axes(adata):

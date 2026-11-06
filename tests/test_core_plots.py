@@ -129,7 +129,10 @@ def test_split(adata):
 def test_feature(adata, feature, raster):
     ax = scp.featureplot(adata, feature, raster=raster)
     assert isinstance(ax, Axes)
-    assert all(c.get_rasterized() is raster for c in ax.collections)
+    if feature == "score":
+        assert all(c.get_rasterized() for c in ax.collections)
+    else:
+        assert all(c.get_rasterized() is raster for c in ax.collections)
     assert "cell_type_colors" not in adata.uns
 
 
@@ -145,24 +148,22 @@ def test_featureplot_threshold_and_none(adata):
     adata.obs["score"] = [-2, -1, 0, 1, 2] * 6
     original = adata.obs["score"].copy()
     ax = scp.featureplot(adata, "score", threshold=0)
-    values = np.ma.asarray(ax.collections[0].get_array())
-    assert np.ma.getmaskarray(values).sum() == 18
-    ax.figure.canvas.draw()
-    gray = np.all(
-        np.isclose(ax.collections[0].get_facecolors()[:, :3], 189 / 255), axis=1
-    )
-    assert gray.sum() == 18
+    assert len(ax.collections[0].get_offsets()) == 18
+    assert len(ax.collections[1].get_offsets()) == 12
     pd.testing.assert_series_equal(adata.obs["score"], original)
 
     ax = scp.featureplot(adata, "score", threshold=10)
-    assert np.ma.getmaskarray(ax.collections[0].get_array()).all()
+    assert len(ax.collections[0].get_offsets()) == 30
+    assert len(ax.collections) == 1
     assert len(ax.figure.axes) == 1
 
     ax = scp.featureplot(adata, "score", threshold=1)
-    assert np.ma.getmaskarray(ax.collections[0].get_array()).sum() == 24
+    assert len(ax.collections[0].get_offsets()) == 24
 
     ax = scp.featureplot(adata, "score", threshold=None)
-    values = np.ma.asarray(ax.collections[0].get_array())
+    values = np.ma.asarray(
+        next(c for c in ax.collections if c.get_array() is not None).get_array()
+    )
     assert np.ma.getmaskarray(values).sum() == 0
     assert values.min() == -2
 
@@ -186,17 +187,53 @@ def test_grid_and_shared(adata):
     assert axes.shape == (2, 2)
     assert not axes[1, 1].get_visible()
     norms = [
-        (a.collections[0].norm.vmin, a.collections[0].norm.vmax) for a in axes.flat[:3]
+        (
+            next(c for c in a.collections if c.get_array() is not None).norm.vmin,
+            next(c for c in a.collections if c.get_array() is not None).norm.vmax,
+        )
+        for a in axes.flat[:3]
     ]
     assert len(set(norms)) == 1
     assert tuple(fig.get_size_inches()) == (9, 11)
+
+
+def test_score_panels_use_adaptive_layout_and_preserve_missing(adata):
+    adata.obs["score_b"] = np.linspace(0, 1, adata.n_obs)
+    adata.obs.loc[adata.obs.index[::4], "score"] = np.nan
+    original = adata.obs["score"].copy()
+    _, axes = scp.featureplot(adata, ["score", "score_b"])
+    assert axes.shape == (1, 2)
+    assert [c.get_offsets().shape[0] for c in axes[0, 0].collections] == [8, 22]
+    bars = [a for a in axes[0, 0].figure.axes if a.get_label() == "<colorbar>"]
+    assert len(bars) == 2
+    pd.testing.assert_series_equal(adata.obs["score"], original)
+
+
+def test_score_defaults_retain_negatives_and_honor_overrides(adata):
+    adata.obs["score"] = np.linspace(-2, 2, adata.n_obs)
+    ax = scp.featureplot(adata, "score", cmap="cividis", alpha=0.6, size=7)
+    foreground = ax.collections[1]
+    assert foreground.get_array().min() == -2
+    assert foreground.get_cmap().name == "cividis"
+    assert foreground.get_alpha() == 0.6
+    np.testing.assert_allclose(foreground.get_sizes(), 7)
+
+
+def test_score_percentile_limits_and_empty_panel(adata):
+    ax = scp.featureplot(adata, "score", vmin="p10", vmax=lambda x: np.max(x))
+    assert ax.collections[1].norm.vmin == pytest.approx(0.1)
+    assert ax.collections[1].norm.vmax == 1
+    adata.obs["score"] = np.nan
+    ax = scp.featureplot(adata, "score")
+    assert any(t.get_text() == "No scored observations" for t in ax.texts)
+    assert len(ax.figure.axes) == 1
 
 
 def test_single_panel_default_size_is_compact(adata):
     ax = scp.dimplot(adata, "cell_type", labels=False)
     assert tuple(ax.figure.get_size_inches()) == (7.5, 5.5)
     ax = scp.featureplot(adata, "gene0")
-    assert tuple(ax.figure.get_size_inches()) == (4.5, 5.5)
+    assert tuple(ax.figure.get_size_inches()) == (12, 8)
     ax = scp.dimplot(adata, "cell_type", labels="numbered", figsize=(6, 4))
     assert tuple(ax.figure.get_size_inches()) == (6, 4)
 
@@ -208,8 +245,7 @@ def test_explicit_canvas_fills_axes_and_keeps_pdf_dimensions(
     monkeypatch.setattr(Figure, "savefig", lambda self, *a, **kw: calls.append(kw))
     ax = scp.featureplot(adata, "gene0", figsize=(12, 8), save=tmp_path / "wide.pdf")
     ax.figure.canvas.draw()
-    assert ax.get_aspect() == "auto"
-    assert ax.get_position().width > 0.85
+    assert ax.get_aspect() == 1
     assert tuple(ax.figure.get_size_inches()) == (12, 8)
     assert calls[0]["bbox_inches"] is None
 

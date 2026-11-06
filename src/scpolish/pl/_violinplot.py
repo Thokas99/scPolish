@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import seaborn as sns
+from adjustText import adjust_text
 from anndata import AnnData
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -25,7 +26,7 @@ def _plot_axes(
     *,
     mode: str,
     orientation: str,
-    ncols: int,
+    ncols: int | None,
     figsize: tuple[float, float] | None,
     ax: Axes | None,
 ) -> tuple[Figure, np.ndarray]:
@@ -38,9 +39,9 @@ def _plot_axes(
         rows, cols = n, 1
         size = figsize or (5.5, max(4.5, n * 1.1))
     else:
-        cols = min(n, ncols)
+        cols = min(n, ncols or (3 if n in (6, 9) else 2))
         rows = ceil(n / cols)
-        size = figsize or (5.5 * cols, 4.5 * rows)
+        size = figsize or ((12, 8) if n == 1 else (5.5 * cols, 4.5 * rows))
     fig, axes = plt.subplots(
         rows,
         cols,
@@ -57,7 +58,11 @@ def _plot_axes(
 
 def _style_axis(ax: Axes, *, orientation: str, rotate: bool) -> None:
     ax.set_facecolor("white")
-    ax.grid(False)
+    ax.grid(
+        axis="y" if orientation == "vertical" else "x",
+        color="#E6E6E6",
+        linewidth=0.45,
+    )
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     if orientation == "vertical" and rotate:
@@ -82,15 +87,18 @@ def violinplot(
     use_raw: bool | None = None,
     palette: str | Sequence | Mapping | None = "muted",
     order: Sequence | None = None,
-    inner: str | None = "box",
+    inner: str | None = None,
     points: bool = False,
     orientation: str = "vertical",
-    ncols: int = 2,
+    ncols: int | None = None,
     figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
     raster: bool = False,
     save: str | Path | None = None,
     dpi: int = 300,
+    labelby: str | None = None,
+    paired_by: str | None = None,
+    show_counts: bool = False,
 ) -> Axes | tuple[Figure, np.ndarray]:
     """Plot grouped gene or numeric observation distributions as violins.
 
@@ -109,7 +117,9 @@ def violinplot(
         raise ValueError("mode must be 'standard' or 'stacked'.")
     if orientation not in ("vertical", "horizontal"):
         raise ValueError("orientation must be 'vertical' or 'horizontal'.")
-    if not isinstance(ncols, int) or isinstance(ncols, bool) or ncols < 1:
+    if ncols is not None and (
+        not isinstance(ncols, int) or isinstance(ncols, bool) or ncols < 1
+    ):
         raise ValueError("ncols must be a positive integer.")
     if not isinstance(points, bool):
         raise ValueError("points must be a boolean.")
@@ -121,6 +131,10 @@ def violinplot(
         raise ValueError(f"groupby {groupby!r} not found in adata.obs.")
     if split_by is not None and split_by not in adata.obs:
         raise ValueError(f"split annotation {split_by!r} not found in adata.obs.")
+    if labelby is not None and labelby not in adata.obs:
+        raise ValueError(f"label annotation {labelby!r} not found in adata.obs.")
+    if paired_by is not None and paired_by not in adata.obs:
+        raise ValueError(f"paired annotation {paired_by!r} not found in adata.obs.")
     if split_by == groupby:
         raise ValueError("split_by must differ from groupby.")
     if layer is not None and use_raw is True:
@@ -167,7 +181,12 @@ def violinplot(
     if not np.isfinite(values.to_numpy(dtype=float)).any():
         raise ValueError("Features contain no finite values to plot.")
 
-    frame = adata.obs[[groupby] + ([split_by] if split_by is not None else [])].copy()
+    columns = list(
+        dict.fromkeys(
+            [groupby] + [c for c in (split_by, labelby, paired_by) if c is not None]
+        )
+    )
+    frame = adata.obs[columns].copy()
     group_values = frame[groupby].astype(object)
     selected = group_values.isna() | group_values.isin(group_order)
     frame = frame.loc[selected].copy()
@@ -238,7 +257,11 @@ def violinplot(
     )
     orient = "x" if orientation == "vertical" else "y"
 
-    with mpl.rc_context(STYLE):
+    with (
+        mpl.rc_context(STYLE),
+        sns.axes_style("whitegrid"),
+        sns.plotting_context("paper", font_scale=0.85),
+    ):
         fig, axes = _plot_axes(
             len(features),
             mode=mode,
@@ -270,6 +293,51 @@ def violinplot(
                 legend=False,
                 ax=axis,
             )
+            sns.boxplot(
+                data=frame,
+                x=x,
+                y=y,
+                order=plot_group_order,
+                hue=hue,
+                hue_order=hue_order,
+                palette={k: "white" for k in hue_order},
+                orient=orient,
+                width=0.22,
+                fliersize=0,
+                linewidth=0.5,
+                dodge=dodge,
+                showcaps=True,
+                boxprops={"zorder": 3},
+                medianprops={"color": "#333333", "linewidth": 0.8, "zorder": 4},
+                whiskerprops={"linewidth": 0.5},
+                capprops={"linewidth": 0.5},
+                legend=False,
+                ax=axis,
+            )
+            if paired_by:
+                paired = frame.dropna(subset=[paired_by, feature]).groupby(
+                    paired_by, observed=True
+                )
+                for _, observation in paired:
+                    levels = (
+                        observation.groupby(groupby, observed=True)[feature]
+                        .median()
+                        .reindex(plot_group_order)
+                    )
+                    if levels.notna().sum() > 1:
+                        positions = np.arange(len(plot_group_order))
+                        values = levels.to_numpy(dtype=float)
+                        axis.plot(
+                            *(
+                                (positions, values)
+                                if orientation == "vertical"
+                                else (values, positions)
+                            ),
+                            color="#777777",
+                            linewidth=0.45,
+                            alpha=0.5,
+                            zorder=0,
+                        )
             if points:
                 sns.stripplot(
                     data=frame,
@@ -281,18 +349,50 @@ def violinplot(
                     palette=color_map if split_by is not None else None,
                     orient=orient,
                     dodge=split_by is not None,
-                    jitter=True,
-                    size=1.2,
+                    jitter=0.08,
+                    size=np.sqrt(18),
                     alpha=0.45,
                     color="#333333" if split_by is None else None,
                     legend=False,
                     ax=axis,
                 )
                 for collection in axis.collections:
-                    if raster and isinstance(
-                        collection, mpl.collections.PathCollection
-                    ):
-                        collection.set_rasterized(True)
+                    if isinstance(collection, mpl.collections.PathCollection):
+                        collection.set_rasterized(raster)
+            if labelby:
+                texts = []
+                for category, subset in frame.groupby(groupby, observed=True):
+                    subset = subset.dropna(subset=[feature, labelby])
+                    if len(subset):
+                        if orientation == "vertical":
+                            xval = np.full(
+                                len(subset), plot_group_order.index(category)
+                            )
+                            yval = subset[feature].to_numpy()
+                        else:
+                            xval = subset[feature].to_numpy()
+                            yval = np.full(
+                                len(subset), plot_group_order.index(category)
+                            )
+                        for xx, yy, label in zip(
+                            np.atleast_1d(xval),
+                            np.atleast_1d(yval),
+                            subset[labelby],
+                            strict=True,
+                        ):
+                            texts.append(
+                                axis.text(
+                                    xx, yy, str(label), fontsize=6, color="#333333"
+                                )
+                            )
+                if texts:
+                    adjust_text(texts, ax=axis)
+            if show_counts and orientation == "vertical":
+                counts = frame.groupby(groupby, observed=False)[feature].count()
+                axis.set_xticks(
+                    np.arange(len(plot_group_order)),
+                    labels=[f"{c}\n(n={counts.get(c, 0)})" for c in plot_group_order],
+                )
             axis.set_xlabel(
                 groupby.replace("_", " ") if orientation == "vertical" else feature
             )

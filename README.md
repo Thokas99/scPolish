@@ -88,17 +88,31 @@ A supplied `ax` requires a single panel. Figures remain open; nothing calls
 Extensionless save paths use PDF. PDF and PNG exports retain the requested
 figure dimensions.
 
-Embedding panels default to 4.5 × 5.5 inches to fit the usual tall UMAP shape.
+Single feature panels default to 12 × 8 inches.
 Multi-panel layouts grow with their rows and columns; pass `figsize` to set the
 exact total canvas size. Default categorical legends reserve room beside the
-embedding. Default layouts preserve embedding proportions; explicit `figsize`
-or supplied axes fills the panel and may stretch coordinates to match its shape.
+embedding. Feature plots preserve embedding proportions with explicit `figsize`
+and supplied axes too.
 Multi-feature grids use independent scales; use
 `shared_scale=True` only for comparable quantities. `layer` and `use_raw` follow
 Scanpy expression-source rules. Numeric `obs` columns are also supported.
 Feature plots use the magma colormap and compact colorbars by default; pass
-`cmap=` to choose another map. Values at or below `threshold=0` are gray; pass
-`threshold=None` to color negative scores. Missing values also stay gray.
+`cmap=` to choose another map. All finite values, including zero and negative
+scores, are colored by default. An explicit `threshold=0` renders nonpositive
+values gray. Missing values stay gray.
+Numeric `obs` score columns use a publication score overlay: unscored cells are
+light gray, scored cells use viridis, and each panel has its own labeled scale.
+Panels report the count of gray observations when scores are missing or an
+explicit threshold excludes values. Paired violin trajectories retain gaps for
+unobserved categories; repeated rows within a donor/category use their median.
+Two, four, and six panels default to 1×2, 2×2, and 2×3; set `ncols=` to override.
+Score limits accept numbers, percentile strings such as `vmin="p5"`, and
+callables. Empty score panels explicitly state that no observations are scored.
+
+Run `uv run python examples/publication_defaults.py` to render the PDF and PNG
+gallery under `examples/output/publication_defaults/` at 300 DPI. Demo scores
+and donor IDs are synthetic, with seed 7; they do not establish biological
+replication.
 
 ## Categorical palettes
 
@@ -157,6 +171,13 @@ installed.
 Standard mode makes a feature grid; stacked mode shares the category axis across
 features. It reads `X`, layers, or `.raw` without normalizing values or changing
 AnnData. Group colors follow `dimplot()`; split categories have their own legend.
+By default, violins have no interior and show a narrow white median/IQR box.
+Optional `points=True` overlays observations; `labelby="donor_id"` labels them,
+`paired_by="donor_id"` connects repeated donors across groups, and
+`show_counts=True` adds per-category observation counts. Counts are cells or
+observations, not biological replicates, and no statistical tests are run.
+Two, four, six, and nine features use 1×2, 2×2, 2×3, and 3×3 layouts; choose
+`ncols=` for another layout.
 
 ```python
 scp.violinplot(
