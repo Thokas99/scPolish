@@ -13,7 +13,7 @@ violin plots built with Matplotlib and Seaborn.
 
 - **Scanpy and AnnData native:** use your AnnData object and existing coordinates, genes, and metadata.
 - **Minimal code:** useful defaults with options for common figure adjustments.
-- **Publication-minded:** compact layouts and vector points by default, with optional rasterization for smaller files.
+- **Publication-minded:** readable grids, muted palettes, and rasterized dense point clouds with vector text.
 - **Composable:** get a Matplotlib `Axes` back and keep working with the usual tools.
 - **Non-destructive:** plotting does not retain Scanpy's generated categorical palette in `adata.uns`.
 - **Reproducible:** use the embedding and data you already have; scPolish does not silently downsample cells.
@@ -62,7 +62,8 @@ import matplotlib.pyplot as plt
 
 scp.dimplot(adata, "louvain", labels="direct")
 scp.dimplot(adata, "louvain", labels="numbered")
-scp.dimplot(adata, "louvain", raster=True)  # opt into rasterized points
+scp.dimplot(adata, "louvain", raster=False)  # keep points vector in PDF
+scp.featureplot(adata, "my_score", style="overlay", title="Short score title")
 # For an object with sample annotations:
 # scp.dimplot(adata, "cell_type", split_by="sample_id")
 scp.featureplot(adata, ["MS4A1", "NKG7", "FCGR3A"], ncols=2)
@@ -72,10 +73,10 @@ ax.set_title("My atlas")
 fig.savefig("custom.pdf", dpi=300)
 ```
 
-See [the runnable PBMC3k examples](examples/core_plots.py) for categorical UMAPs,
-direct and numbered labels, a clearly marked synthetic split, single and multiple
-gene feature plots, and existing Matplotlib axes. The script saves PDF and PNG
-figures at 300 DPI under `examples/output/core_plots/`.
+See [the runnable PBMC3k examples](examples/publication_defaults.py) for direct
+and numbered categorical labels, score overlays, and grouped violin plots. The
+script saves PDF and PNG figures at 300 DPI under
+`examples/output/plotting_styles/`.
 The lower-level `scp.embedding()` examples in
 [basic_embedding.py](examples/basic_embedding.py) also use PBMC3k and save
 categorical, numeric-metadata, and gene-expression UMAPs under
@@ -88,29 +89,35 @@ A supplied `ax` requires a single panel. Figures remain open; nothing calls
 Extensionless save paths use PDF. PDF and PNG exports retain the requested
 figure dimensions.
 
-Single feature panels default to 12 × 8 inches.
+Single-panel figures default to 12 × 8 inches.
 Multi-panel layouts grow with their rows and columns; pass `figsize` to set the
 exact total canvas size. Default categorical legends reserve room beside the
 embedding. Feature plots preserve embedding proportions with explicit `figsize`
 and supplied axes too.
-Multi-feature grids use independent scales; use
-`shared_scale=True` only for comparable quantities. `layer` and `use_raw` follow
-Scanpy expression-source rules. Numeric `obs` columns are also supported.
-Feature plots use the magma colormap and compact colorbars by default; pass
-`cmap=` to choose another map. All finite values, including zero and negative
-scores, are colored by default. An explicit `threshold=0` renders nonpositive
-values gray. Missing values stay gray.
-Numeric `obs` score columns use a publication score overlay: unscored cells are
-light gray, scored cells use viridis, and each panel has its own labeled scale.
-Panels report the count of gray observations when scores are missing or an
-explicit threshold excludes values. Paired violin trajectories retain gaps for
-unobserved categories; repeated rows within a donor/category use their median.
-Two, four, and six panels default to 1×2, 2×2, and 2×3; set `ncols=` to override.
-Score limits accept numbers, percentile strings such as `vmin="p5"`, and
-callables. Empty score panels explicitly state that no observations are scored.
+Multi-panel layouts default to 1×2 for two panels, 1×3 for three, 2×2 for four,
+2×3 for five or six, and 3×3 for seven through nine; set `ncols=` to override.
+`featureplot()` uses Scanpy-compatible plotting by default. Use
+`style="overlay"` for continuous scores: missing cells stay light gray, scored
+cells use viridis, and each panel gets a compact colorbar labeled with the
+original feature name. Use a string `title=` for one panel (or a figure title),
+or map feature names to short panel titles; colorbar labels keep the original
+names. All finite values, including zero and negative scores, are colored;
+`threshold=0` renders nonpositive values gray. Score limits accept numbers,
+percentile strings such as `vmin="p5"`, and callables. Set `shared_scale=True`
+only when comparing the same score across subsets; unrelated features keep
+independent scales.
+
+```python
+scp.featureplot(
+    adata,
+    ["score_a", "score_b"],
+    style="overlay",
+    title={"score_a": "Score A", "score_b": "Score B"},
+)
+```
 
 Run `uv run python examples/publication_defaults.py` to render the PDF and PNG
-gallery under `examples/output/publication_defaults/` at 300 DPI. Demo scores
+gallery under `examples/output/plotting_styles/` at 300 DPI. Demo scores
 and donor IDs are synthetic, with seed 7; they do not establish biological
 replication.
 
@@ -129,8 +136,14 @@ scp.dimplot(adata, "louvain", palette="pastel")
 scp.violinplot(adata, ["CD3D", "MS4A1"], "louvain", palette="muted")
 
 colors = [
-    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
-    "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
+    "#4E79A7",
+    "#F28E2B",
+    "#E15759",
+    "#76B7B2",
+    "#59A14F",
+    "#EDC948",
+    "#B07AA1",
+    "#FF9DA7",
 ]
 custom = dict(zip(adata.obs["louvain"].cat.categories, colors, strict=True))
 scp.dimplot(adata, "louvain", palette=custom)
@@ -154,16 +167,17 @@ The example uses PBMC3k's eight `louvain` categories; supply one list color per
 category in the resolved order.
 
 Labels use observed cells nearest category medians; automatic mode chooses
-direct labels up to 20 categories and numbered labels above that. Split panels
-share colors and limits; they skip label repulsion to keep plotting bounded.
-Missing split values get their own panel.
+direct labels up to 20 categories and numbered labels above that. `adjustText`
+resolves label overlaps. Numbered plots include an external category/count
+legend; use `legend=True` to add one to direct labels. Split panels share colors
+and limits, and missing split values get their own panel.
 
-Points and text stay vector by default. Set `raster=True` to rasterize point
-collections while keeping labels, legends, axes and colorbar text editable in
-vector exports. Point areas shrink as cell counts grow; `point_scale` adjusts
-`dimplot()` and `featureplot()` markers, and explicit `size` overrides the
-automatic size. Typography uses a temporary rc context. No global theme is
-installed.
+Point clouds with at least 1,000 observations rasterize by default; pass
+`raster=False` to keep points vector or `raster=True` to rasterize smaller
+plots. Labels, legends, axes and colorbar text remain vector. Point areas shrink
+as cell counts grow; `point_scale` adjusts `dimplot()` and `featureplot()`
+markers, and explicit `size` overrides the automatic size. Typography uses a
+temporary rc context. No global theme is installed.
 
 ## Violin plots
 
@@ -171,13 +185,30 @@ installed.
 Standard mode makes a feature grid; stacked mode shares the category axis across
 features. It reads `X`, layers, or `.raw` without normalizing values or changing
 AnnData. Group colors follow `dimplot()`; split categories have their own legend.
-By default, violins have no interior and show a narrow white median/IQR box.
-Optional `points=True` overlays observations; `labelby="donor_id"` labels them,
-`paired_by="donor_id"` connects repeated donors across groups, and
-`show_counts=True` adds per-category observation counts. Counts are cells or
-observations, not biological replicates, and no statistical tests are run.
-Two, four, six, and nine features use 1×2, 2×2, 2×3, and 3×3 layouts; choose
-`ncols=` for another layout.
+Muted or pastel fills use thin near-black outlines; violins have no interior
+layer and show a narrow white median/IQR box by default. Optional
+`points=True` overlays dark-gray observations; `labelby="donor_id"`
+labels them, `paired_by="donor_id"` connects matching observation IDs, and
+`show_counts=True` adds per-category observation counts. Pairing requires one
+observation per ID and group; scPolish does not aggregate cells into donors.
+Counts are observations, not biological replicates, and no statistical tests
+are run. Optional pair brackets use supplied p-values with
+[`statannotations`](https://github.com/trevismd/statannotations); scPolish does
+not calculate tests. Install `scpolish[annotations]` to use them. For multiple
+features, provide one p-value list per feature; `pairs` are shared across those
+panels.
+
+```python
+scp.violinplot(
+    adata,
+    "PTPRC",
+    groupby="cell_type",
+    pairs=[("Naive CD4 T", "Memory CD4 T")],
+    pvalues=[0.018],  # supplied by the caller; no test is run
+)
+```
+
+Multi-panel layouts use the common grid above; choose `ncols=` to override it.
 
 ```python
 scp.violinplot(
@@ -204,8 +235,9 @@ if "sample_id" in adata.obs:
     )
 ```
 
-Cell points are off by default. `inner="box"` shows median and IQR; set
-`points=True` to add cells and `raster=True` to rasterize those points. One
+Cell points are off by default. The default white box overlay shows median and
+IQR; set `points=True` to add observations. Point clouds with at least 1,000
+observations rasterize by default, and `raster=` overrides that choice. One
 feature returns an `Axes`; multiple features return `(fig, axes)` for
 customization. Save as PDF or PNG by choosing the filename extension.
 

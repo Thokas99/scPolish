@@ -1,4 +1,6 @@
 import copy
+import sys
+from types import ModuleType
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -8,10 +10,13 @@ import pytest
 from matplotlib.axes import Axes
 from matplotlib.collections import PathCollection, PolyCollection
 from matplotlib.figure import Figure
+from matplotlib.patches import PathPatch
+from matplotlib.transforms import BboxBase
 from scipy import sparse
 
 import scpolish as scp
 import scpolish.pl as pl
+import scpolish.pl._violinplot as violin_module
 
 
 def _result_axes(result):
@@ -40,9 +45,10 @@ def test_exports_and_single_feature(adata):
 
 
 def test_paired_lines_preserve_missing_category_gaps(adata):
-    adata.obs["donor"] = "demo"
-    adata.obs.loc[adata.obs["cell_type"] == "B", "score"] = np.nan
-    ax = scp.violinplot(adata, "score", "cell_type", paired_by="donor")
+    paired = adata[[0, 1, 2]].copy()
+    paired.obs["donor"] = "demo"
+    paired.obs.loc[paired.obs["cell_type"] == "B", "score"] = np.nan
+    ax = scp.violinplot(paired, "score", "cell_type", paired_by="donor")
     trajectory = next(line for line in ax.lines if line.get_linewidth() == 0.45)
     assert np.isnan(trajectory.get_ydata()[1])
 
@@ -56,13 +62,26 @@ def test_multiple_features_form_requested_grid(adata):
 
 
 @pytest.mark.parametrize(
-    "count,shape", [(2, (1, 2)), (4, (2, 2)), (6, (2, 3)), (9, (3, 3))]
+    "count,shape",
+    [
+        (1, (1, 1)),
+        (2, (1, 2)),
+        (3, (1, 3)),
+        (4, (2, 2)),
+        (5, (2, 3)),
+        (6, (2, 3)),
+        (7, (3, 3)),
+        (9, (3, 3)),
+    ],
 )
 def test_publication_layout_defaults(adata, count, shape):
     for i in range(count):
         adata.obs[f"layout_{i}"] = np.arange(adata.n_obs, dtype=float)
     result = scp.violinplot(adata, [f"layout_{i}" for i in range(count)], "cell_type")
-    assert result[1].shape == shape
+    if count == 1:
+        assert isinstance(result, Axes)
+    else:
+        assert result[1].shape == shape
 
 
 def test_stacked_features_share_categories_and_return_axes(adata):
@@ -76,6 +95,12 @@ def test_stacked_features_share_categories_and_return_axes(adata):
     assert all(not ax.get_xticklabels() for ax in axes[:-1, 0])
     assert [t.get_text() for t in axes[-1, 0].get_xticklabels()] == ["A", "B", "C"]
     assert isinstance(fig, Figure)
+    assert tuple(fig.get_size_inches()) == (5.5, 4.5)
+
+
+def test_single_stacked_feature_uses_publication_canvas(adata):
+    ax = scp.violinplot(adata, "gene0", "cell_type", mode="stacked")
+    assert tuple(ax.figure.get_size_inches()) == (12, 8)
 
 
 def test_category_order_and_palette_match_dimplot(adata):
@@ -123,6 +148,45 @@ def test_default_palette_matches_dimplot(adata):
         if isinstance(collection, PolyCollection)
     ]
     assert actual == expected
+
+
+def test_violins_have_dark_outlines_and_narrow_white_boxes(adata):
+    ax = scp.violinplot(adata, "gene0", "cell_type")
+    violins = [c for c in ax.collections if isinstance(c, PolyCollection)]
+    assert len(violins) == 3
+    assert all(
+        np.allclose(c.get_edgecolors()[0][:3], mpl.colors.to_rgb("#222222"))
+        for c in violins
+    )
+    assert all(0.5 <= c.get_linewidths()[0] <= 1 for c in violins)
+
+    boxes = [p for p in ax.patches if isinstance(p, PathPatch)]
+    assert len(boxes) == 3
+    assert all(
+        np.ptp(box.get_path().vertices[:, 0]) == pytest.approx(0.22) for box in boxes
+    )
+    assert all(np.allclose(box.get_facecolor()[:3], (1, 1, 1)) for box in boxes)
+
+
+def test_split_box_overlays_align_with_each_hue(adata):
+    adata.obs["sample"] = pd.Categorical(["one", "two"] * 15)
+    ax = scp.violinplot(adata, "gene0", "cell_type", split_by="sample")
+    boxes = [p for p in ax.patches if isinstance(p, PathPatch)]
+    centers = np.array(
+        [
+            np.mean(
+                [
+                    box.get_path().vertices[:, 0].min(),
+                    box.get_path().vertices[:, 0].max(),
+                ]
+            )
+            for box in boxes
+        ]
+    )
+    for group in range(3):
+        group_centers = centers[np.abs(centers - group) < 0.5]
+        assert len(group_centers) == 2
+        assert group_centers.min() < group < group_centers.max()
 
 
 def test_split_two_categories_are_labeled(adata):
@@ -245,6 +309,113 @@ def test_points_are_optional_and_rasterization_is_opt_in(adata):
     ax = scp.violinplot(adata, "gene0", "cell_type", points=True, raster=True)
     point_collections = [c for c in ax.collections if isinstance(c, PathCollection)]
     assert all(c.get_rasterized() for c in point_collections)
+    assert all(
+        np.allclose(c.get_facecolors()[:, :3], mpl.colors.to_rgb("#333333"))
+        for c in point_collections
+    )
+    assert all(np.allclose(c.get_sizes(), 18) for c in point_collections)
+
+
+def test_label_adjustment_avoids_plotted_points_and_boxes(monkeypatch, adata):
+    adata = adata[:12].copy()
+    adata.obs["condition"] = pd.Categorical(["Control", "Treatment"] * 6)
+    adata.obs["donor"] = np.repeat([f"donor{i}" for i in range(6)], 2)
+    adata.obs["demo_value"] = np.repeat([-1.1, -0.2, 0.4, 1.0, 1.4, 2.3], 2) + np.tile(
+        [0, 0.6], 6
+    )
+    real_adjust_text = violin_module.adjust_text
+    received = {}
+
+    def capture_adjustment(texts, **kwargs):
+        received.update(kwargs)
+        return real_adjust_text(texts, **kwargs)
+
+    monkeypatch.setattr(violin_module, "adjust_text", capture_adjustment)
+    ax = scp.violinplot(
+        adata,
+        "demo_value",
+        "condition",
+        points=True,
+        labelby="donor",
+        paired_by="donor",
+    )
+    plotted_points = np.concatenate(
+        [
+            np.asarray(collection.get_offsets())
+            for collection in ax.collections
+            if isinstance(collection, PathCollection)
+        ]
+    )
+    np.testing.assert_allclose(
+        np.column_stack((received["x"], received["y"])), plotted_points
+    )
+    assert all(isinstance(item, BboxBase) for item in received["objects"])
+    ax.figure.canvas.draw()
+    renderer = ax.figure.canvas.get_renderer()
+    labels = [text for text in ax.texts if text.get_text().startswith("donor")]
+    boxes = [patch for patch in ax.patches if isinstance(patch, PathPatch)]
+    assert len(labels) == 12
+    assert all(
+        not label.get_window_extent(renderer).overlaps(box.get_window_extent(renderer))
+        for label in labels
+        for box in boxes
+    )
+
+
+def test_optional_pair_annotations_use_supplied_pvalues(monkeypatch, adata):
+    calls = []
+
+    class FakeAnnotator:
+        def __init__(self, ax, pairs, **kwargs):
+            calls.append({"ax": ax, "pairs": pairs, "kwargs": kwargs})
+
+        def configure(self, **kwargs):
+            calls[-1]["configuration"] = kwargs
+            return self
+
+        def set_pvalues_and_annotate(self, pvalues):
+            calls[-1]["pvalues"] = pvalues
+            return self
+
+    package = ModuleType("statannotations")
+    annotator_module = ModuleType("statannotations.Annotator")
+    annotator_module.Annotator = FakeAnnotator
+    monkeypatch.setitem(sys.modules, "statannotations", package)
+    monkeypatch.setitem(sys.modules, "statannotations.Annotator", annotator_module)
+    pairs = [("A", "B")]
+    scp.violinplot(
+        adata,
+        ["gene0", "gene1"],
+        "cell_type",
+        pairs=pairs,
+        pvalues={"gene0": [0.03], "gene1": [0.08]},
+    )
+    assert [call["pvalues"].tolist() for call in calls] == [[0.03], [0.08]]
+    assert all(call["pairs"] == pairs for call in calls)
+    assert all(call["kwargs"]["plot"] == "violinplot" for call in calls)
+    assert all(call["kwargs"]["orient"] == "x" for call in calls)
+    assert all(
+        call["configuration"] == {"loc": "outside", "verbose": 0} for call in calls
+    )
+
+
+def test_pair_annotations_require_matching_pvalues(adata):
+    with pytest.raises(ValueError, match="provided together"):
+        scp.violinplot(adata, "gene0", "cell_type", pairs=[("A", "B")])
+    with pytest.raises(ValueError, match=r"lie in \[0, 1\]"):
+        scp.violinplot(
+            adata,
+            "gene0",
+            "cell_type",
+            pairs=[("A", "B")],
+            pvalues=[1.1],
+        )
+
+
+def test_pairing_does_not_aggregate_repeated_cells(adata):
+    adata.obs["donor"] = "shared"
+    with pytest.raises(ValueError, match="no aggregation"):
+        scp.violinplot(adata, "score", "cell_type", paired_by="donor")
 
 
 def test_pdf_export_and_external_axes(adata, tmp_path):

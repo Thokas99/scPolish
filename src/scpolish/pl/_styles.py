@@ -1,5 +1,6 @@
 """Shared plotting defaults and small layout helpers."""
 
+from math import ceil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -42,18 +43,27 @@ def prepare(adata: AnnData, basis: str) -> tuple[AnnData, str]:
     return obj, basis
 
 
-def panels(n: int, ncols: int, figsize: tuple | None, ax: Axes | None):
+def panel_shape(n: int, ncols: int | None = None) -> tuple[int, int]:
+    """Choose a compact publication grid, honoring explicit column counts."""
+    if n < 1:
+        raise ValueError("At least one panel is required.")
+    if ncols is not None and (
+        not isinstance(ncols, int) or isinstance(ncols, bool) or ncols < 1
+    ):
+        raise ValueError("ncols must be a positive integer.")
+    cols = min(n, ncols or (1 if n == 1 else 3 if n == 3 or n >= 5 else 2))
+    return ceil(n / cols), cols
+
+
+def panels(n: int, ncols: int | None, figsize: tuple | None, ax: Axes | None):
     """Return figure and a two-dimensional array of embedding axes."""
-    if ncols < 1:
-        raise ValueError("ncols must be positive.")
+    rows, cols = panel_shape(n, ncols)
     if ax is not None:
         if n != 1:
             raise ValueError("ax is only supported for a single panel.")
         return ax.figure, np.array([[ax]])
-    cols = min(n, ncols)
-    rows = int(np.ceil(n / cols))
     if figsize is None:
-        figsize = (4.5 * cols, 5.5 * rows)
+        figsize = (12, 8) if n == 1 else (4.5 * cols, 5.5 * rows)
     fig, axes = plt.subplots(
         rows,
         cols,

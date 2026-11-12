@@ -106,8 +106,57 @@ def test_many_categories(adata):
     adata.obs["many"] = pd.Categorical([f"type{i}" for i in range(30)])
     ax = scp.dimplot(adata, "many")
     assert len(ax.texts) == 30
-    assert ax.get_legend().get_texts()[0].get_text().startswith("1  ")
+    assert ax.figure.legends[0].get_texts()[0].get_text().startswith("1  ")
     assert ax.figure.get_figwidth() > 5.5
+
+
+def test_direct_labels_can_have_a_count_legend(adata):
+    ax = scp.dimplot(adata, "cell_type", labels="direct", legend=True)
+    labels = [text.get_text() for text in ax.figure.legends[0].get_texts()]
+    assert labels == ["A (10)", "B (10)", "C (10)"]
+    assert ax.get_aspect() == 1
+
+
+def test_long_external_legend_grows_canvas_without_clipping(adata):
+    names = [f"Cell class {i} " + "very-long-label-" * 5 for i in range(3)]
+    adata.obs["long_type"] = pd.Categorical(
+        [names[i % len(names)] for i in range(adata.n_obs)]
+    )
+    ax = scp.dimplot(adata, "long_type", labels=False, legend=True)
+    ax.figure.canvas.draw()
+    legend = ax.figure.legends[0]
+    assert ax.figure.get_figwidth() > 12
+    assert (
+        legend.get_window_extent(ax.figure.canvas.get_renderer()).x1
+        <= ax.figure.bbox.x1
+    )
+
+
+def test_overlay_sorting_area_title_and_original_colorbar_label(adata):
+    adata.obs["score"] = np.linspace(0, 1, adata.n_obs)
+    adata.obs.loc[adata.obs.index[::4], "score"] = np.nan
+    ax = scp.featureplot(adata, "score", style="overlay", title="Short")
+    background, scored = ax.collections
+    np.testing.assert_allclose(background.get_sizes(), 1)
+    np.testing.assert_allclose(scored.get_sizes(), 2)
+    valid = np.isfinite(adata.obs["score"].to_numpy())
+    np.testing.assert_array_equal(scored.get_offsets(), adata.obsm["X_umap"][valid])
+    assert ax.get_title() == "Short"
+    assert ax.figure.axes[1].get_ylabel() == "score"
+    assert all(not collection.get_rasterized() for collection in ax.collections)
+
+
+def test_panel_titles_keep_original_colorbar_labels(adata):
+    adata.obs["score_b"] = np.linspace(1, 2, adata.n_obs)
+    fig, axes = scp.featureplot(
+        adata,
+        ["score", "score_b"],
+        style="overlay",
+        title={"score": "Short A", "score_b": "Short B"},
+    )
+    assert [ax.get_title() for ax in axes.flat] == ["Short A", "Short B"]
+    colorbars = [axis for axis in fig.axes if axis not in axes.flat]
+    assert [axis.get_ylabel() for axis in colorbars] == ["score", "score_b"]
 
 
 def test_split(adata):
@@ -127,10 +176,15 @@ def test_split(adata):
 @pytest.mark.parametrize("feature", ["score", "gene0"])
 @pytest.mark.parametrize("raster", [False, True])
 def test_feature(adata, feature, raster):
-    ax = scp.featureplot(adata, feature, raster=raster)
+    ax = scp.featureplot(
+        adata,
+        feature,
+        style="overlay" if feature == "score" else "scanpy",
+        raster=raster,
+    )
     assert isinstance(ax, Axes)
     if feature == "score":
-        assert all(c.get_rasterized() for c in ax.collections)
+        assert all(c.get_rasterized() is raster for c in ax.collections)
     else:
         assert all(c.get_rasterized() is raster for c in ax.collections)
     assert "cell_type_colors" not in adata.uns
@@ -138,7 +192,7 @@ def test_feature(adata, feature, raster):
 
 def test_featureplot_default_cmap_and_compact_colorbar(adata):
     ax = scp.featureplot(adata, "gene0")
-    assert ax.collections[0].get_cmap().name == "magma"
+    assert ax.collections[0].get_cmap().name == "viridis"
     colorbar_ax = next(axis for axis in ax.figure.axes if axis is not ax)
     assert colorbar_ax.get_position().height < ax.get_position().height
     assert colorbar_ax.get_position().width < ax.get_position().width * 0.1
@@ -147,20 +201,20 @@ def test_featureplot_default_cmap_and_compact_colorbar(adata):
 def test_featureplot_threshold_and_none(adata):
     adata.obs["score"] = [-2, -1, 0, 1, 2] * 6
     original = adata.obs["score"].copy()
-    ax = scp.featureplot(adata, "score", threshold=0)
+    ax = scp.featureplot(adata, "score", style="overlay", threshold=0)
     assert len(ax.collections[0].get_offsets()) == 18
     assert len(ax.collections[1].get_offsets()) == 12
     pd.testing.assert_series_equal(adata.obs["score"], original)
 
-    ax = scp.featureplot(adata, "score", threshold=10)
+    ax = scp.featureplot(adata, "score", style="overlay", threshold=10)
     assert len(ax.collections[0].get_offsets()) == 30
     assert len(ax.collections) == 1
     assert len(ax.figure.axes) == 1
 
-    ax = scp.featureplot(adata, "score", threshold=1)
+    ax = scp.featureplot(adata, "score", style="overlay", threshold=1)
     assert len(ax.collections[0].get_offsets()) == 24
 
-    ax = scp.featureplot(adata, "score", threshold=None)
+    ax = scp.featureplot(adata, "score", style="overlay", threshold=None)
     values = np.ma.asarray(
         next(c for c in ax.collections if c.get_array() is not None).get_array()
     )
@@ -183,9 +237,10 @@ def test_point_area_adapts_to_cell_count(adata):
 
 
 def test_grid_and_shared(adata):
-    fig, axes = scp.featureplot(adata, ["score", "gene0", "gene1"], shared_scale=True)
-    assert axes.shape == (2, 2)
-    assert not axes[1, 1].get_visible()
+    fig, axes = scp.featureplot(
+        adata, ["score", "gene0", "gene1"], style="overlay", shared_scale=True
+    )
+    assert axes.shape == (1, 3)
     norms = [
         (
             next(c for c in a.collections if c.get_array() is not None).norm.vmin,
@@ -194,14 +249,14 @@ def test_grid_and_shared(adata):
         for a in axes.flat[:3]
     ]
     assert len(set(norms)) == 1
-    assert tuple(fig.get_size_inches()) == (9, 11)
+    assert tuple(fig.get_size_inches()) == (13.5, 5.5)
 
 
 def test_score_panels_use_adaptive_layout_and_preserve_missing(adata):
     adata.obs["score_b"] = np.linspace(0, 1, adata.n_obs)
     adata.obs.loc[adata.obs.index[::4], "score"] = np.nan
     original = adata.obs["score"].copy()
-    _, axes = scp.featureplot(adata, ["score", "score_b"])
+    _, axes = scp.featureplot(adata, ["score", "score_b"], style="overlay")
     assert axes.shape == (1, 2)
     assert [c.get_offsets().shape[0] for c in axes[0, 0].collections] == [8, 22]
     bars = [a for a in axes[0, 0].figure.axes if a.get_label() == "<colorbar>"]
@@ -209,29 +264,48 @@ def test_score_panels_use_adaptive_layout_and_preserve_missing(adata):
     pd.testing.assert_series_equal(adata.obs["score"], original)
 
 
+def test_score_subsets_share_scale_only_when_requested(adata):
+    adata.obs["score"] = np.arange(adata.n_obs, dtype=float)
+    adata.obs["score_a"] = adata.obs["score"].where(np.arange(adata.n_obs) < 15)
+    adata.obs["score_b"] = adata.obs["score"].where(np.arange(adata.n_obs) >= 15)
+    _, axes = scp.featureplot(
+        adata, ["score_a", "score_b"], style="overlay", shared_scale=True
+    )
+    limits = [axes[0, i].collections[1].norm for i in range(2)]
+    assert [(norm.vmin, norm.vmax) for norm in limits] == [(0, 29), (0, 29)]
+
+
 def test_score_defaults_retain_negatives_and_honor_overrides(adata):
     adata.obs["score"] = np.linspace(-2, 2, adata.n_obs)
-    ax = scp.featureplot(adata, "score", cmap="cividis", alpha=0.6, size=7)
+    ax = scp.featureplot(
+        adata, "score", style="overlay", cmap="cividis", alpha=0.6, size=7
+    )
     foreground = ax.collections[1]
     assert foreground.get_array().min() == -2
-    assert foreground.get_cmap().name == "cividis"
+    assert foreground.get_cmap().name == "viridis"
     assert foreground.get_alpha() == 0.6
-    np.testing.assert_allclose(foreground.get_sizes(), 7)
+    np.testing.assert_allclose(foreground.get_sizes(), 2)
 
 
 def test_score_percentile_limits_and_empty_panel(adata):
-    ax = scp.featureplot(adata, "score", vmin="p10", vmax=lambda x: np.max(x))
+    ax = scp.featureplot(
+        adata,
+        "score",
+        style="overlay",
+        vmin="p10",
+        vmax=lambda x: np.max(x),
+    )
     assert ax.collections[1].norm.vmin == pytest.approx(0.1)
     assert ax.collections[1].norm.vmax == 1
     adata.obs["score"] = np.nan
-    ax = scp.featureplot(adata, "score")
+    ax = scp.featureplot(adata, "score", style="overlay")
     assert any(t.get_text() == "No scored observations" for t in ax.texts)
     assert len(ax.figure.axes) == 1
 
 
 def test_single_panel_default_size_is_compact(adata):
     ax = scp.dimplot(adata, "cell_type", labels=False)
-    assert tuple(ax.figure.get_size_inches()) == (7.5, 5.5)
+    assert tuple(ax.figure.get_size_inches()) == (12, 8)
     ax = scp.featureplot(adata, "gene0")
     assert tuple(ax.figure.get_size_inches()) == (12, 8)
     ax = scp.dimplot(adata, "cell_type", labels="numbered", figsize=(6, 4))
@@ -253,8 +327,13 @@ def test_explicit_canvas_fills_axes_and_keeps_pdf_dimensions(
 def test_dimplot_explicit_canvas_fills_panel(adata):
     ax = scp.dimplot(adata, "cell_type", labels=False, figsize=(12, 8))
     ax.figure.canvas.draw()
-    assert ax.get_aspect() == "auto"
-    assert ax.get_position().width > 0.75
+    assert ax.get_aspect() == 1
+
+
+def test_dimplot_layout_override(adata):
+    adata.obs["sample"] = pd.Categorical([f"sample{i % 5}" for i in range(adata.n_obs)])
+    _, axes = scp.dimplot(adata, "cell_type", split_by="sample", ncols=2)
+    assert axes.shape == (3, 2)
 
 
 @pytest.mark.parametrize("basis", ["pca", "tsne", "X_umap"])
@@ -309,6 +388,24 @@ def test_invalid(adata):
         scp.featureplot(adata, "cell_type")
     with pytest.raises(ValueError):
         scp.dimplot(adata, "cell_type", labels="wrong")
+    with pytest.raises(ValueError, match="style"):
+        scp.featureplot(adata, "score", style="invalid")
+
+
+def test_scanpy_style_remains_the_default_for_numeric_scores(adata):
+    ax = scp.featureplot(adata, "score")
+    assert len(ax.collections) == 1
+    assert len(ax.collections[0].get_offsets()) == adata.n_obs
+
+
+def test_overlay_uses_full_coordinates_and_shared_limits(adata):
+    adata.obs["score_b"] = np.linspace(0, 1, adata.n_obs)
+    before = adata.obsm["X_umap"].copy()
+    _, axes = scp.featureplot(adata, ["score", "score_b"], style="overlay")
+    assert axes.shape == (1, 2)
+    assert axes[0, 0].get_xlim() == axes[0, 1].get_xlim()
+    assert axes[0, 0].get_ylim() == axes[0, 1].get_ylim()
+    np.testing.assert_array_equal(adata.obsm["X_umap"], before)
 
 
 def test_export_dpi(adata, monkeypatch, tmp_path):

@@ -1,7 +1,6 @@
 """Grouped violin plots for genes and numeric observation annotations."""
 
 from collections.abc import Mapping, Sequence
-from math import ceil
 from pathlib import Path
 
 import matplotlib as mpl
@@ -18,7 +17,7 @@ from matplotlib.patches import Patch
 
 from scpolish._utils.colors import categorical_categories, resolve_palette
 
-from ._styles import STYLE, export
+from ._styles import STYLE, export, panel_shape
 
 
 def _plot_axes(
@@ -37,10 +36,9 @@ def _plot_axes(
 
     if mode == "stacked":
         rows, cols = n, 1
-        size = figsize or (5.5, max(4.5, n * 1.1))
+        size = figsize or ((12, 8) if n == 1 else (5.5, max(4.5, n * 1.1)))
     else:
-        cols = min(n, ncols or (3 if n in (6, 9) else 2))
-        rows = ceil(n / cols)
+        rows, cols = panel_shape(n, ncols)
         size = figsize or ((12, 8) if n == 1 else (5.5 * cols, 4.5 * rows))
     fig, axes = plt.subplots(
         rows,
@@ -93,20 +91,24 @@ def violinplot(
     ncols: int | None = None,
     figsize: tuple[float, float] | None = None,
     ax: Axes | None = None,
-    raster: bool = False,
+    raster: bool | None = None,
     save: str | Path | None = None,
     dpi: int = 300,
     labelby: str | None = None,
     paired_by: str | None = None,
     show_counts: bool = False,
+    pairs: Sequence[tuple] | None = None,
+    pvalues: Sequence[float] | Mapping[str, Sequence[float]] | None = None,
 ) -> Axes | tuple[Figure, np.ndarray]:
     """Plot grouped gene or numeric observation distributions as violins.
 
     One feature returns an :class:`~matplotlib.axes.Axes`; multiple features
     return ``(Figure, 2D axes array)``. Stacked mode uses one shared-category
     row per feature. Missing group and split levels are shown as ``NA``; missing
-    split levels use gray. Missing feature values are omitted. Point overlays
-    stay vector unless ``raster=True``.
+    split levels use gray. Missing feature values are omitted. Optional
+    ``pairs`` and supplied ``pvalues`` add statannotations brackets without
+    calculating tests. Multi-feature plots need p-values keyed by feature.
+    Point overlays stay vector unless ``raster=True``.
     """
     features = [features] if isinstance(features, str) else list(features)
     if not features or any(not isinstance(feature, str) for feature in features):
@@ -123,8 +125,11 @@ def violinplot(
         raise ValueError("ncols must be a positive integer.")
     if not isinstance(points, bool):
         raise ValueError("points must be a boolean.")
-    if not isinstance(raster, bool):
-        raise ValueError("raster must be a boolean.")
+    if (pairs is None) != (pvalues is None):
+        raise ValueError("pairs and pvalues must be provided together.")
+    if raster is not None and not isinstance(raster, bool):
+        raise ValueError("raster must be a boolean or None.")
+    raster = adata.n_obs >= 1_000 if raster is None else raster
     if inner not in ("box", "quart", "stick", "point", None):
         raise ValueError("inner must be 'box', 'quart', 'stick', 'point', or None.")
     if groupby not in adata.obs:
@@ -181,6 +186,35 @@ def violinplot(
     if not np.isfinite(values.to_numpy(dtype=float)).any():
         raise ValueError("Features contain no finite values to plot.")
 
+    if pairs is not None:
+        pairs = list(pairs)
+        if not pairs:
+            raise ValueError("pairs must contain at least one comparison.")
+        if isinstance(pvalues, Mapping):
+            if set(pvalues) != set(features):
+                raise ValueError("pvalues mapping keys must match features.")
+            raw_pvalues = pvalues
+        elif len(features) == 1:
+            raw_pvalues = {features[0]: pvalues}
+        else:
+            raise ValueError("Multiple features require pvalues keyed by feature.")
+        feature_pvalues = {}
+        for feature, feature_values in raw_pvalues.items():
+            try:
+                pvalue_array = np.asarray(feature_values, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"pvalues for {feature!r} must be numeric.") from exc
+            if (
+                pvalue_array.ndim != 1
+                or len(pvalue_array) != len(pairs)
+                or not np.isfinite(pvalue_array).all()
+                or np.any((pvalue_array < 0) | (pvalue_array > 1))
+            ):
+                raise ValueError(
+                    f"pvalues for {feature!r} must match pairs and lie in [0, 1]."
+                )
+            feature_pvalues[feature] = pvalue_array
+
     columns = list(
         dict.fromkeys(
             [groupby] + [c for c in (split_by, labelby, paired_by) if c is not None]
@@ -199,6 +233,13 @@ def violinplot(
     for feature in features:
         frame[feature] = values.loc[frame.index, feature].to_numpy(
             dtype=float, copy=True
+        )
+    if (
+        paired_by is not None
+        and frame.dropna(subset=[paired_by]).duplicated([paired_by, groupby]).any()
+    ):
+        raise ValueError(
+            "paired_by requires one observation per group; no aggregation is performed."
         )
 
     if split_by is None:
@@ -288,7 +329,8 @@ def violinplot(
                 dodge=dodge,
                 inner=inner,
                 cut=0,
-                linewidth=0.5,
+                linewidth=0.75,
+                linecolor="#222222",
                 saturation=1,
                 legend=False,
                 ax=axis,
@@ -305,9 +347,9 @@ def violinplot(
                 width=0.22,
                 fliersize=0,
                 linewidth=0.5,
-                dodge=dodge,
+                dodge=dodge or split,
                 showcaps=True,
-                boxprops={"zorder": 3},
+                boxprops={"zorder": 3, "edgecolor": "#222222"},
                 medianprops={"color": "#333333", "linewidth": 0.8, "zorder": 4},
                 whiskerprops={"linewidth": 0.5},
                 capprops={"linewidth": 0.5},
@@ -319,10 +361,8 @@ def violinplot(
                     paired_by, observed=True
                 )
                 for _, observation in paired:
-                    levels = (
-                        observation.groupby(groupby, observed=True)[feature]
-                        .median()
-                        .reindex(plot_group_order)
+                    levels = observation.set_index(groupby)[feature].reindex(
+                        plot_group_order
                     )
                     if levels.notna().sum() > 1:
                         positions = np.arange(len(plot_group_order))
@@ -346,12 +386,16 @@ def violinplot(
                     order=plot_group_order,
                     hue=split_by,
                     hue_order=hue_order if split_by is not None else None,
-                    palette=color_map if split_by is not None else None,
+                    palette=(
+                        {category: "#333333" for category in hue_order}
+                        if split_by is not None
+                        else None
+                    ),
                     orient=orient,
                     dodge=split_by is not None,
                     jitter=0.08,
                     size=np.sqrt(18),
-                    alpha=0.45,
+                    alpha=0.7,
                     color="#333333" if split_by is None else None,
                     legend=False,
                     ax=axis,
@@ -361,6 +405,7 @@ def violinplot(
                         collection.set_rasterized(raster)
             if labelby:
                 texts = []
+                targets = []
                 for category, subset in frame.groupby(groupby, observed=True):
                     subset = subset.dropna(subset=[feature, labelby])
                     if len(subset):
@@ -385,11 +430,65 @@ def violinplot(
                                     xx, yy, str(label), fontsize=6, color="#333333"
                                 )
                             )
+                            targets.append((xx, yy))
                 if texts:
-                    adjust_text(texts, ax=axis)
-            if show_counts and orientation == "vertical":
+                    point_offsets = [
+                        np.asarray(collection.get_offsets())
+                        for collection in axis.collections
+                        if isinstance(collection, mpl.collections.PathCollection)
+                        and len(collection.get_offsets())
+                    ]
+                    avoid = (
+                        np.concatenate(point_offsets)
+                        if point_offsets
+                        else np.asarray(targets)
+                    )
+                    targets = np.asarray(targets)
+                    adjust_text(
+                        texts,
+                        x=avoid[:, 0],
+                        y=avoid[:, 1],
+                        objects=[
+                            axis.transData.inverted().transform_bbox(
+                                patch.get_window_extent().expanded(1.15, 1.12)
+                            )
+                            for patch in axis.patches
+                        ],
+                        target_x=targets[:, 0],
+                        target_y=targets[:, 1],
+                        ax=axis,
+                        iter_lim=300,
+                        min_arrow_len=8,
+                        arrowprops={"arrowstyle": "-", "color": "#777777", "lw": 0.4},
+                    )
+            if pairs is not None:
+                try:
+                    from statannotations.Annotator import Annotator
+                except ImportError as exc:
+                    raise ImportError(
+                        "Install scpolish[annotations] to use pair annotations."
+                    ) from exc
+                Annotator(
+                    axis,
+                    pairs,
+                    plot="violinplot",
+                    data=frame,
+                    x=x,
+                    y=y,
+                    hue=split_by,
+                    order=plot_group_order,
+                    hue_order=hue_order if split_by is not None else None,
+                    orient=orient,
+                    verbose=0,
+                ).configure(loc="outside", verbose=0).set_pvalues_and_annotate(
+                    feature_pvalues[feature]
+                )
+            if show_counts:
                 counts = frame.groupby(groupby, observed=False)[feature].count()
-                axis.set_xticks(
+                tick_setter = (
+                    axis.set_xticks if orientation == "vertical" else axis.set_yticks
+                )
+                tick_setter(
                     np.arange(len(plot_group_order)),
                     labels=[f"{c}\n(n={counts.get(c, 0)})" for c in plot_group_order],
                 )

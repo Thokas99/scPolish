@@ -12,12 +12,22 @@ import scanpy as sc
 from adjustText import adjust_text
 from anndata import AnnData
 from matplotlib.axes import Axes
+from matplotlib.colors import to_rgb
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from scpolish._utils.colors import categorical_categories, resolve_palette
 
-from ._styles import STYLE, export, finish, panels, point_size, prepare
+from ._styles import STYLE, export, finish, panel_shape, panels, point_size, prepare
+
+
+def _label_text_color(color: str) -> str:
+    rgb = np.asarray(to_rgb(color))
+    luminance = np.dot(
+        np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4),
+        [0.2126, 0.7152, 0.0722],
+    )
+    return "#222222" if luminance > 0.45 else "white"
 
 
 def dimplot(
@@ -31,9 +41,11 @@ def dimplot(
     size: float | None = None,
     point_scale: float = 1.0,
     alpha: float = 1.0,
-    raster: bool = False,
+    raster: bool | None = None,
     title: str | None = None,
     split_by: str | None = None,
+    ncols: int | None = None,
+    legend: bool | None = None,
     ax: Axes | None = None,
     save: str | Path | None = None,
     dpi: int = 300,
@@ -42,14 +54,16 @@ def dimplot(
 
     Return Axes for one panel, otherwise (Figure, 2D axes array), including
     hidden unused panels. Split panels share limits, colors and marker areas;
-    labels use observed cells nearest category medians. Repulsion runs only
-    for unsplit plots. Points stay vector unless ``raster=True``. Missing
-    split values receive their own panel.
+    labels use observed cells nearest category medians. ``legend=True`` adds
+    category names and counts; dense point clouds rasterize by default.
     """
     if labels not in ("auto", "direct", "numbered", False):
         raise ValueError("labels must be 'auto', 'direct', 'numbered', or False.")
-    if not isinstance(raster, bool):
-        raise ValueError("raster must be a boolean.")
+    if raster is not None and not isinstance(raster, bool):
+        raise ValueError("raster must be a boolean or None.")
+    if legend is not None and not isinstance(legend, bool):
+        raise ValueError("legend must be a boolean or None.")
+    raster = adata.n_obs >= 1_000 if raster is None else raster
     obj, basis = prepare(adata, basis)
     if groupby not in obj.obs:
         raise ValueError(f"Annotation {groupby!r} not found in adata.obs.")
@@ -71,11 +85,11 @@ def dimplot(
         if labels == "auto"
         else labels
     )
+    show_legend = (mode == "numbered" or mode is False) if legend is None else legend
     if split_by is not None and split_by not in obj.obs:
         raise ValueError(f"Split annotation {split_by!r} not found in adata.obs.")
     splits = [None] if split_by is None else list(pd.unique(obj.obs[split_by]))
     area = point_size(adata.n_obs, size, point_scale)
-    fill_panel = figsize is not None or ax is not None
     coords = obj.obsm[f"X_{basis}"]
     finite = np.isfinite(coords).all(axis=1)
     limits = [(coords[finite, i].min(), coords[finite, i].max()) for i in range(2)]
@@ -95,20 +109,19 @@ def dimplot(
                 )
             )
         numbered = mode == "numbered"
-        width = max(
-            3.0, max((len(h.get_label()) for h in legend_entries), default=0) * 0.075
-        )
         canvas = figsize
         if canvas is None and ax is None:
-            cols = min(len(splits), 3)
-            rows = int(np.ceil(len(splits) / cols))
-            canvas = (4.5 * cols, 5.5 * rows)
-            if numbered or mode is False:
+            rows, cols = panel_shape(len(splits), ncols)
+            canvas = (12, 8) if len(splits) == 1 else (4.5 * cols, 5.5 * rows)
+            if show_legend:
+                legend_chars = max(
+                    (len(handle.get_label()) for handle in legend_entries), default=0
+                )
                 canvas = (
-                    canvas[0] + width,
+                    canvas[0] + max(0, legend_chars - 32) * 0.06,
                     max(canvas[1], len(categories) * 0.22 + 1),
                 )
-        fig, axes = panels(len(splits), min(3, len(splits)), canvas, ax)
+        fig, axes = panels(len(splits), ncols, canvas, ax)
         for axis, split in zip(axes.flat, splits, strict=False):
             mask = (
                 np.ones(obj.n_obs, dtype=bool)
@@ -141,7 +154,7 @@ def dimplot(
                 axis,
                 basis,
                 raster=raster,
-                aspect="auto" if fill_panel else "equal",
+                aspect="equal",
             )
             for setter, (lo, hi) in zip(
                 (axis.set_xlim, axis.set_ylim), limits, strict=True
@@ -171,9 +184,17 @@ def dimplot(
                             va="center",
                             fontsize=9,
                             fontweight="semibold",
-                            color="white",
+                            color=_label_text_color(colors[category]),
                             path_effects=[
-                                pe.withStroke(linewidth=1.2, foreground="black")
+                                pe.withStroke(
+                                    linewidth=1.2,
+                                    foreground=(
+                                        "white"
+                                        if _label_text_color(colors[category])
+                                        == "#222222"
+                                        else "black"
+                                    ),
+                                )
                             ],
                             bbox=dict(
                                 boxstyle="round,pad=0.3",
@@ -185,7 +206,7 @@ def dimplot(
                         )
                     )
                     anchors.append(anchor)
-                if texts and split_by is None:
+                if texts:
                     anchors = np.asarray(anchors)
                     adjust_text(
                         texts,
@@ -197,23 +218,31 @@ def dimplot(
                         min_arrow_len=12,
                         arrowprops=dict(arrowstyle="-", color="0.45", lw=0.45),
                     )
-        if numbered or mode is False:
-            if not numbered:
-                for handle, category in zip(legend_entries, categories, strict=True):
-                    handle.set_label(str(category))
+        if show_legend:
+            for i, (handle, category) in enumerate(
+                zip(legend_entries, categories, strict=True)
+            ):
+                prefix = f"{i + 1}  " if numbered else ""
+                count = int((obj.obs[groupby] == category).sum())
+                handle.set_label(f"{prefix}{category} ({count:,})")
             if obj.obs[groupby].isna().any():
                 legend_entries.append(
                     Line2D(
-                        [], [], marker="o", linestyle="", color="#BDBDBD", label="NA"
+                        [],
+                        [],
+                        marker="o",
+                        linestyle="",
+                        color="#BDBDBD",
+                        label=f"NA ({obj.obs[groupby].isna().sum():,})",
                     )
                 )
-            axes.flat[len(splits) - 1].legend(
-                handles=legend_entries,
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
-                frameon=False,
-                ncols=1,
-            )
+            legend_args = {"handles": legend_entries, "frameon": False, "ncols": 1}
+            if ax is None:
+                fig.legend(loc="outside right center", **legend_args)
+            else:
+                axes.flat[len(splits) - 1].legend(
+                    loc="center left", bbox_to_anchor=(1.02, 0.5), **legend_args
+                )
         if title and split_by is not None:
             fig.suptitle(title)
         export(fig, save, dpi)

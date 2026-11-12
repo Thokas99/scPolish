@@ -1,6 +1,6 @@
 """Continuous Scanpy embedding plots."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from numbers import Real
 from pathlib import Path
 
@@ -33,6 +33,7 @@ def featureplot(
     basis: str = "umap",
     layer: str | None = None,
     use_raw: bool | None = None,
+    style: str = "scanpy",
     threshold: float | None = None,
     cmap: str | None = None,
     figsize: tuple[float, float] | None = None,
@@ -40,11 +41,11 @@ def featureplot(
     size: float | None = None,
     point_scale: float = 1.0,
     alpha: float = 0.9,
-    raster: bool = False,
+    raster: bool | None = None,
     vmin=None,
     vmax=None,
     shared_scale: bool = False,
-    title: str | None = None,
+    title: str | Mapping[str, str] | None = None,
     ax: Axes | None = None,
     save: str | Path | None = None,
     dpi: int = 300,
@@ -54,15 +55,24 @@ def featureplot(
     Return Axes for one feature, otherwise (Figure, 2D axes array), including
     hidden unused panels. Shared scales are opt-in for comparable quantities.
     Gene panels accept Scanpy percentile strings and callables as vmin/vmax.
-    Score overlays are rasterized; gene points follow ``raster``. Finite values,
-    including negatives, are colored by default. An explicit threshold renders
-    values at or below it gray.
+    ``style="scanpy"`` preserves Scanpy plotting by default. ``style="overlay"``
+    draws full-embedding score overlays with missing cells in gray. Finite values,
+    including negatives, are colored; an explicit threshold renders lower values
+    gray. Set ``shared_scale=True`` only for comparable feature values.
     """
     features = [features] if isinstance(features, str) else list(features)
     if not features or len(set(features)) != len(features):
         raise ValueError("features must contain unique feature names.")
-    if not isinstance(raster, bool):
-        raise ValueError("raster must be a boolean.")
+    if style not in ("scanpy", "overlay"):
+        raise ValueError("style must be 'scanpy' or 'overlay'.")
+    if isinstance(title, Mapping) and any(
+        feature not in features or not isinstance(value, str)
+        for feature, value in title.items()
+    ):
+        raise ValueError("title mapping keys must be requested features and strings.")
+    if raster is not None and not isinstance(raster, bool):
+        raise ValueError("raster must be a boolean or None.")
+    raster = adata.n_obs >= 1_000 if raster is None else raster
     if threshold is not None and (
         isinstance(threshold, bool)
         or not isinstance(threshold, Real)
@@ -87,7 +97,11 @@ def featureplot(
         if finite.size:
             vmin = finite.min() if vmin is None else vmin
             vmax = finite.max() if vmax is None else vmax
-    ncols = ncols or (3 if len(features) in (6, 9) else 2)
+    coords = np.asarray(obj.obsm[f"X_{basis}"])[:, :2]
+    finite_xy = np.isfinite(coords).all(axis=1)
+    limits = [
+        (coords[finite_xy, i].min(), coords[finite_xy, i].max()) for i in range(2)
+    ]
     area = point_size(adata.n_obs, size, point_scale)
     with mpl.rc_context(STYLE | {"axes.titlesize": 11, "axes.titleweight": "normal"}):
         fig, axes = panels(
@@ -97,18 +111,21 @@ def featureplot(
             ax,
         )
         for axis, feature in zip(axes.flat, features, strict=False):
-            if feature in adata.obs and pd.api.types.is_numeric_dtype(
-                adata.obs[feature]
-            ):
-                coords = np.asarray(obj.obsm[f"X_{basis}"])
+            panel_title = (
+                title.get(feature, feature)
+                if isinstance(title, Mapping)
+                else title
+                if len(features) == 1 and title
+                else feature
+            )
+            if style == "overlay":
                 score = values[feature].to_numpy(dtype=float)
-                finite_xy = np.isfinite(coords[:, :2]).all(axis=1)
                 scored = np.isfinite(score) & finite_xy
                 axis.scatter(
                     *coords[finite_xy & ~scored, :2].T,
                     c="#DDDDDD",
                     s=1,
-                    rasterized=True,
+                    rasterized=raster,
                 )
                 if scored.any():
                     scale_values = finite if shared_scale else score[scored]
@@ -120,12 +137,12 @@ def featureplot(
                     points = axis.scatter(
                         *coords[ranked, :2].T,
                         c=score[ranked],
-                        s=size or 2 * point_scale,
-                        cmap=cmap or "viridis",
+                        s=2,
+                        cmap="viridis",
                         alpha=alpha,
                         vmin=limits_min,
                         vmax=limits_max,
-                        rasterized=True,
+                        rasterized=raster,
                         zorder=2,
                     )
                     colorbar = fig.colorbar(
@@ -148,7 +165,7 @@ def featureplot(
                         color="#555555",
                         bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9},
                     )
-                finish(axis, basis, raster=True, aspect="equal")
+                finish(axis, basis, raster=raster, aspect="equal")
                 unscored = int((finite_xy & ~scored).sum())
                 if unscored:
                     reason = (
@@ -162,7 +179,7 @@ def featureplot(
                         fontsize=7,
                         color="#555555",
                     )
-                axis.set_title(title if len(features) == 1 and title else feature)
+                axis.set_title(panel_title)
                 continue
             sc.pl.embedding(
                 obj,
@@ -174,12 +191,12 @@ def featureplot(
                 sort_order=True,
                 size=area,
                 alpha=alpha,
-                cmap=cmap or "magma",
+                cmap=cmap or "viridis",
                 colorbar_loc=None,
                 vmin=vmin,
                 vmax=vmax,
                 na_color="#BDBDBD",
-                title=title if len(features) == 1 else feature,
+                title=panel_title,
             )
             mappable = next(
                 (
@@ -199,6 +216,7 @@ def featureplot(
                     aspect=30,
                 )
                 colorbar.ax.tick_params(labelsize=8, length=2, width=0.5)
+                colorbar.set_label(feature, fontsize=8, labelpad=4)
                 colorbar.outline.set_linewidth(0.5)
             finish(
                 axis,
@@ -206,7 +224,12 @@ def featureplot(
                 raster=raster,
                 aspect="equal",
             )
-        if title and len(features) > 1:
+            for setter, (lo, hi) in zip(
+                (axis.set_xlim, axis.set_ylim), limits, strict=True
+            ):
+                pad = (hi - lo) * 0.05 or 0.5
+                setter(lo - pad, hi + pad)
+        if isinstance(title, str) and title and len(features) > 1:
             fig.suptitle(title)
         export(fig, save, dpi)
     return axes.flat[0] if len(features) == 1 else (fig, axes)

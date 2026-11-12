@@ -40,8 +40,8 @@ def test_categories_keep_categorical_order_and_drop_unused_and_missing(adata):
     )
     assert categorical_categories(adata.obs["cell_type"]) == ["B", "A"]
     ax = scp.dimplot(adata, "cell_type", labels=False)
-    legend_labels = [text.get_text() for text in ax.get_legend().get_texts()]
-    assert legend_labels == ["B", "A", "NA"]
+    legend_labels = [text.get_text() for text in ax.figure.legends[0].get_texts()]
+    assert legend_labels == ["B (10)", "A (10)", "NA (10)"]
 
 
 def test_violin_missing_group_uses_gray_and_is_not_generated(adata):

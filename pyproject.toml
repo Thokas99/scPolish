@@ -21,6 +21,9 @@ dependencies = [
   "seaborn>=0.13",
 ]
 
+[project.optional-dependencies]
+annotations = ["statannotations>=0.7.2"]
+
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.8"]
 
