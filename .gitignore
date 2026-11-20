@@ -53,6 +53,7 @@ Thumbs.db
 .idea/
 
 # Local indexing and prompt-packing artifacts
+.codegraph/
 .gitnexus/
 .claude/
 CLAUDE.md
