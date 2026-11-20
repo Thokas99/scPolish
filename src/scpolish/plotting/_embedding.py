@@ -5,7 +5,13 @@ from anndata import AnnData
 from matplotlib.axes import Axes
 from matplotlib.collections import PathCollection
 
-from scpolish._utils.style import auto_point_size, style_context
+from scpolish._utils.scanpy import matplotlib_plotting
+from scpolish._utils.style import (
+    auto_point_size,
+    style_context,
+    validate_figsize,
+    validate_positive_number,
+)
 
 
 def embedding(
@@ -21,6 +27,12 @@ def embedding(
     """Plot an AnnData embedding with Scanpy and return its Matplotlib axes."""
     if not isinstance(raster, bool):
         raise ValueError("raster must be a boolean.")
+    if not isinstance(basis, str):
+        raise ValueError("basis must be a string.")
+    figsize = validate_figsize(figsize)
+    size = validate_positive_number(
+        auto_point_size(adata.n_obs) if size is None else size, name="size"
+    )
     basis_key = basis.removeprefix("X_")
     obsm_key = f"X_{basis_key}"
     if obsm_key not in adata.obsm:
@@ -50,14 +62,14 @@ def embedding(
         with style_context():
             import scanpy as sc
 
-            sc.pl.embedding(
+            matplotlib_plotting(sc).embedding(
                 adata,
                 basis=basis_key,
                 color=color,
                 ax=ax,
                 show=False,
                 return_fig=False,
-                size=size if size is not None else auto_point_size(adata.n_obs),
+                size=size,
                 title=title,
             )
     finally:

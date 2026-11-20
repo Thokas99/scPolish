@@ -13,6 +13,7 @@ import scpolish as scp
 import scpolish.pl as pl
 from scpolish._utils.colors import categorical_colors, resolve_palette
 from scpolish._utils.style import auto_point_size
+from scpolish.pl._styles import prepare
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +25,19 @@ def close_figures():
 def test_exports():
     assert scp.dimplot is pl.dimplot
     assert scp.featureplot is pl.featureplot
+
+
+def test_prepare_copies_only_requested_observation_columns(adata):
+    obj, basis = prepare(
+        adata, "X_umap", obs_columns=("cell_type", "missing", "cell_type")
+    )
+    assert basis == "umap"
+    assert list(obj.obs.columns) == ["cell_type"]
+    assert obj.shape == (adata.n_obs, 0)
+    np.testing.assert_array_equal(obj.obsm["X_umap"], adata.obsm["X_umap"][:, :2])
+
+    obj, _ = prepare(adata, "umap", obs_columns=())
+    assert obj.obs.empty
 
 
 def test_categorical_color_helper_resolves_palette_in_category_order(adata):
@@ -282,7 +296,7 @@ def test_score_defaults_retain_negatives_and_honor_overrides(adata):
     )
     foreground = ax.collections[1]
     assert foreground.get_array().min() == -2
-    assert foreground.get_cmap().name == "viridis"
+    assert foreground.get_cmap().name == "cividis"
     assert foreground.get_alpha() == 0.6
     np.testing.assert_allclose(foreground.get_sizes(), 2)
 

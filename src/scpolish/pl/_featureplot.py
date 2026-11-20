@@ -13,17 +13,38 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
-from ._styles import STYLE, export, finish, panels, point_size, prepare
+from scpolish._utils.scanpy import matplotlib_plotting, obs_df
+
+from ._styles import (
+    STYLE,
+    export,
+    feature_names,
+    finish,
+    panels,
+    point_size,
+    prepare,
+    validate_alpha,
+)
 
 
 def _score_limit(limit, values, default):
     if limit is None:
-        return default(values)
-    if callable(limit):
-        return limit(values)
-    if isinstance(limit, str) and limit.startswith("p"):
-        return np.percentile(values, float(limit[1:]))
-    return limit
+        result = default(values)
+    elif callable(limit):
+        result = limit(values)
+    elif isinstance(limit, str) and limit.startswith("p"):
+        result = np.percentile(values, float(limit[1:]))
+    else:
+        result = limit
+    if isinstance(result, bool) or not isinstance(result, Real):
+        raise ValueError("vmin and vmax must resolve to finite numbers.")
+    try:
+        finite = np.isfinite(result)
+    except (TypeError, OverflowError):
+        finite = False
+    if not finite:
+        raise ValueError("vmin and vmax must resolve to finite numbers.")
+    return result
 
 
 def featureplot(
@@ -33,6 +54,7 @@ def featureplot(
     basis: str = "umap",
     layer: str | None = None,
     use_raw: bool | None = None,
+    use: object | None = None,
     style: str = "scanpy",
     threshold: float | None = None,
     cmap: str | None = None,
@@ -58,13 +80,17 @@ def featureplot(
     ``style="scanpy"`` preserves Scanpy plotting by default. ``style="overlay"``
     draws full-embedding score overlays with missing cells in gray. Finite values,
     including negatives, are colored; an explicit threshold renders lower values
-    gray. Set ``shared_scale=True`` only for comparable feature values.
+    gray. ``cmap`` overrides the default viridis map. Set ``shared_scale=True``
+    only for comparable feature values.
+    ``use`` accepts a Scanpy 1.13 AnnData accessor and cannot be combined with
+    ``layer`` or ``use_raw``.
     """
-    features = [features] if isinstance(features, str) else list(features)
-    if not features or len(set(features)) != len(features):
-        raise ValueError("features must contain unique feature names.")
+    features = feature_names(features)
+    validate_alpha(alpha)
     if style not in ("scanpy", "overlay"):
         raise ValueError("style must be 'scanpy' or 'overlay'.")
+    if not isinstance(shared_scale, bool):
+        raise ValueError("shared_scale must be a boolean.")
     if isinstance(title, Mapping) and any(
         feature not in features or not isinstance(value, str)
         for feature, value in title.items()
@@ -79,14 +105,23 @@ def featureplot(
         or not np.isfinite(threshold)
     ):
         raise ValueError("threshold must be a finite number or None.")
-    obj, basis = prepare(adata, basis)
-    raw = adata.raw is not None and layer is None if use_raw is None else use_raw
+    obj, basis = prepare(adata, basis, obs_columns=())
+    if use is not None and (layer is not None or use_raw is not None):
+        raise ValueError("use cannot be combined with layer or use_raw.")
+    if use is not None:
+        raw = False
+    elif use_raw is None:
+        raw = adata.raw is not None and layer is None
+    else:
+        raw = use_raw
     if raw and layer is not None:
         raise ValueError("Cannot use layer and use_raw=True together.")
-    values = sc.get.obs_df(adata, keys=features, layer=layer, use_raw=raw)
+    values = obs_df(adata, keys=features, layer=layer, use_raw=raw, use=use)
     for feature in features:
-        if not pd.api.types.is_numeric_dtype(values[feature]):
-            raise ValueError(f"Feature {feature!r} must be numeric.")
+        if not pd.api.types.is_numeric_dtype(
+            values[feature]
+        ) or pd.api.types.is_complex_dtype(values[feature]):
+            raise ValueError(f"Feature {feature!r} must be real and numeric.")
     if threshold is not None:
         values = values.where(values > threshold)
     for feature in features:
@@ -131,6 +166,8 @@ def featureplot(
                     scale_values = finite if shared_scale else score[scored]
                     limits_min = _score_limit(vmin, scale_values, np.min)
                     limits_max = _score_limit(vmax, scale_values, np.max)
+                    if limits_min > limits_max:
+                        raise ValueError("vmin cannot be greater than vmax.")
                     ranked = np.flatnonzero(scored)[
                         np.argsort(score[scored], kind="stable")
                     ]
@@ -138,7 +175,7 @@ def featureplot(
                         *coords[ranked, :2].T,
                         c=score[ranked],
                         s=2,
-                        cmap="viridis",
+                        cmap=cmap if cmap is not None else "viridis",
                         alpha=alpha,
                         vmin=limits_min,
                         vmax=limits_max,
@@ -181,11 +218,10 @@ def featureplot(
                     )
                 axis.set_title(panel_title)
                 continue
-            sc.pl.embedding(
+            matplotlib_plotting(sc).embedding(
                 obj,
                 basis=basis,
                 color=feature,
-                use_raw=False,
                 ax=axis,
                 show=False,
                 sort_order=True,

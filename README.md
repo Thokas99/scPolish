@@ -77,10 +77,15 @@ See [the runnable PBMC3k examples](examples/publication_defaults.py) for direct
 and numbered categorical labels, score overlays, and grouped violin plots. The
 script saves PDF and PNG figures at 300 DPI under
 `examples/output/plotting_styles/`.
-The lower-level `scp.embedding()` examples in
-[basic_embedding.py](examples/basic_embedding.py) also use PBMC3k and save
-categorical, numeric-metadata, and gene-expression UMAPs under
-`examples/output/basic_embedding/`.
+Scanpy 1.13 requires Python 3.13. On that version, `featureplot()` and
+`violinplot()` also accept an AnnData accessor through `use=`. Existing `layer=`
+and `use_raw=` calls remain supported on older Scanpy versions:
+
+```python
+from anndata.acc import A
+
+scp.featureplot(adata, "MS4A1", use=A.layers["counts"])
+```
 
 Single panels return `Axes`; multiple panels return `(fig, axes)`, where `axes`
 is always a two-dimensional NumPy array, including hidden unused panels.
@@ -98,10 +103,11 @@ Multi-panel layouts default to 1×2 for two panels, 1×3 for three, 2×2 for fou
 2×3 for five or six, and 3×3 for seven through nine; set `ncols=` to override.
 `featureplot()` uses Scanpy-compatible plotting by default. Use
 `style="overlay"` for continuous scores: missing cells stay light gray, scored
-cells use viridis, and each panel gets a compact colorbar labeled with the
-original feature name. Use a string `title=` for one panel (or a figure title),
-or map feature names to short panel titles; colorbar labels keep the original
-names. All finite values, including zero and negative scores, are colored;
+cells use viridis by default (or `cmap=`), and each panel gets a compact
+colorbar labeled with the original feature name. Use a string `title=` for one
+panel (or a figure title), or map feature names to short panel titles; colorbar
+labels keep the original names. All finite values, including zero and negative
+scores, are colored;
 `threshold=0` renders nonpositive values gray. Score limits accept numbers,
 percentile strings such as `vmin="p5"`, and callables. Set `shared_scale=True`
 only when comparing the same score across subsets; unrelated features keep

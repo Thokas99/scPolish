@@ -17,8 +17,18 @@ from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from scpolish._utils.colors import categorical_categories, resolve_palette
+from scpolish._utils.scanpy import matplotlib_plotting
 
-from ._styles import STYLE, export, finish, panel_shape, panels, point_size, prepare
+from ._styles import (
+    STYLE,
+    export,
+    finish,
+    panel_shape,
+    panels,
+    point_size,
+    prepare,
+    validate_alpha,
+)
 
 
 def _label_text_color(color: str) -> str:
@@ -57,6 +67,7 @@ def dimplot(
     labels use observed cells nearest category medians. ``legend=True`` adds
     category names and counts; dense point clouds rasterize by default.
     """
+    validate_alpha(alpha)
     if labels not in ("auto", "direct", "numbered", False):
         raise ValueError("labels must be 'auto', 'direct', 'numbered', or False.")
     if raster is not None and not isinstance(raster, bool):
@@ -64,7 +75,7 @@ def dimplot(
     if legend is not None and not isinstance(legend, bool):
         raise ValueError("legend must be a boolean or None.")
     raster = adata.n_obs >= 1_000 if raster is None else raster
-    obj, basis = prepare(adata, basis)
+    obj, basis = prepare(adata, basis, obs_columns=(groupby, split_by))
     if groupby not in obj.obs:
         raise ValueError(f"Annotation {groupby!r} not found in adata.obs.")
     series = obj.obs[groupby]
@@ -96,18 +107,19 @@ def dimplot(
     with mpl.rc_context(STYLE):
         colors = resolve_palette(categories, palette, adata=adata, key=groupby)
         legend_entries = []
-        for i, category in enumerate(categories):
-            count = int((obj.obs[groupby] == category).sum())
-            legend_entries.append(
-                Line2D(
-                    [],
-                    [],
-                    marker="o",
-                    linestyle="",
-                    color=colors[category],
-                    label=f"{i + 1}  {category} ({count:,})",
+        if show_legend:
+            category_counts = obj.obs[groupby].value_counts(sort=False)
+            for i, category in enumerate(categories):
+                legend_entries.append(
+                    Line2D(
+                        [],
+                        [],
+                        marker="o",
+                        linestyle="",
+                        color=colors[category],
+                        label=f"{i + 1}  {category} ({category_counts[category]:,})",
+                    )
                 )
-            )
         numbered = mode == "numbered"
         canvas = figsize
         if canvas is None and ax is None:
@@ -137,7 +149,7 @@ def dimplot(
             panel.obs[groupby] = pd.Categorical(
                 panel.obs[groupby], categories=categories
             )
-            sc.pl.embedding(
+            matplotlib_plotting(sc).embedding(
                 panel,
                 basis=basis,
                 color=groupby,
@@ -176,6 +188,7 @@ def dimplot(
                         if numbered
                         else textwrap.fill(str(category), 24, break_long_words=False)
                     )
+                    text_color = _label_text_color(colors[category])
                     texts.append(
                         axis.text(
                             *anchor,
@@ -184,15 +197,12 @@ def dimplot(
                             va="center",
                             fontsize=9,
                             fontweight="semibold",
-                            color=_label_text_color(colors[category]),
+                            color=text_color,
                             path_effects=[
                                 pe.withStroke(
                                     linewidth=1.2,
                                     foreground=(
-                                        "white"
-                                        if _label_text_color(colors[category])
-                                        == "#222222"
-                                        else "black"
+                                        "white" if text_color == "#222222" else "black"
                                     ),
                                 )
                             ],
@@ -223,8 +233,7 @@ def dimplot(
                 zip(legend_entries, categories, strict=True)
             ):
                 prefix = f"{i + 1}  " if numbered else ""
-                count = int((obj.obs[groupby] == category).sum())
-                handle.set_label(f"{prefix}{category} ({count:,})")
+                handle.set_label(f"{prefix}{category} ({category_counts[category]:,})")
             if obj.obs[groupby].isna().any():
                 legend_entries.append(
                     Line2D(

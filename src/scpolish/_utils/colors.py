@@ -66,7 +66,12 @@ def _scanpy_palette(adata: AnnData, key: str, categories: list) -> dict:
 
     obj = AnnData(obs=adata.obs[[key]].copy())
     obj.obs[key] = pd.Categorical(obj.obs[key], categories=levels)
-    from scanpy.plotting._tools.scatterplots import _get_palette
+    import scanpy as sc
+
+    if hasattr(sc.pl, "legacy"):
+        from scanpy.plotting.legacy._tools.scatterplots import _get_palette
+    else:
+        from scanpy.plotting._tools.scatterplots import _get_palette
 
     colors = _get_palette(obj, key, palette=None)
     return {category: to_hex(to_rgba(colors[category])) for category in categories}
@@ -94,7 +99,8 @@ def resolve_palette(
     categories = list(categories)
     if not categories:
         return {}
-    if len(set(categories)) != len(categories):
+    category_set = set(categories)
+    if len(category_set) != len(categories):
         raise ValueError("categories must be unique.")
 
     if palette is None:
@@ -115,7 +121,7 @@ def resolve_palette(
 
     if isinstance(palette, Mapping):
         missing = [category for category in categories if category not in palette]
-        unknown = [category for category in palette if category not in set(categories)]
+        unknown = [category for category in palette if category not in category_set]
         if missing or unknown:
             details = []
             if missing:

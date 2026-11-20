@@ -7,7 +7,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import seaborn as sns
 from adjustText import adjust_text
 from anndata import AnnData
@@ -16,8 +15,10 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 
 from scpolish._utils.colors import categorical_categories, resolve_palette
+from scpolish._utils.scanpy import obs_df
+from scpolish._utils.style import validate_figsize
 
-from ._styles import STYLE, export, panel_shape
+from ._styles import STYLE, export, feature_names, panel_shape
 
 
 def _plot_axes(
@@ -83,6 +84,7 @@ def violinplot(
     split_by: str | None = None,
     layer: str | None = None,
     use_raw: bool | None = None,
+    use: object | None = None,
     palette: str | Sequence | Mapping | None = "muted",
     order: Sequence | None = None,
     inner: str | None = None,
@@ -108,13 +110,11 @@ def violinplot(
     split levels use gray. Missing feature values are omitted. Optional
     ``pairs`` and supplied ``pvalues`` add statannotations brackets without
     calculating tests. Multi-feature plots need p-values keyed by feature.
-    Point overlays stay vector unless ``raster=True``.
+    Point overlays stay vector unless ``raster=True``. ``use`` accepts a
+    Scanpy 1.13 AnnData accessor and cannot be combined with ``layer`` or
+    ``use_raw``.
     """
-    features = [features] if isinstance(features, str) else list(features)
-    if not features or any(not isinstance(feature, str) for feature in features):
-        raise ValueError("features must contain one or more feature names.")
-    if len(set(features)) != len(features):
-        raise ValueError("features must contain unique names.")
+    features = feature_names(features)
     if mode not in ("standard", "stacked"):
         raise ValueError("mode must be 'standard' or 'stacked'.")
     if orientation not in ("vertical", "horizontal"):
@@ -125,6 +125,8 @@ def violinplot(
         raise ValueError("ncols must be a positive integer.")
     if not isinstance(points, bool):
         raise ValueError("points must be a boolean.")
+    if not isinstance(show_counts, bool):
+        raise ValueError("show_counts must be a boolean.")
     if (pairs is None) != (pvalues is None):
         raise ValueError("pairs and pvalues must be provided together.")
     if raster is not None and not isinstance(raster, bool):
@@ -142,11 +144,18 @@ def violinplot(
         raise ValueError(f"paired annotation {paired_by!r} not found in adata.obs.")
     if split_by == groupby:
         raise ValueError("split_by must differ from groupby.")
+    if use is not None and (layer is not None or use_raw is not None):
+        raise ValueError("use cannot be combined with layer or use_raw.")
     if layer is not None and use_raw is True:
         raise ValueError("Cannot use layer and use_raw=True together.")
     if layer is not None and layer not in adata.layers:
         raise ValueError(f"Layer {layer!r} not found in adata.layers.")
-    raw = adata.raw is not None and layer is None if use_raw is None else use_raw
+    if use is not None:
+        raw = False
+    elif use_raw is None:
+        raw = adata.raw is not None and layer is None
+    else:
+        raw = use_raw
     if raw and adata.raw is None:
         raise ValueError("use_raw=True requires adata.raw.")
 
@@ -166,23 +175,19 @@ def violinplot(
     plot_group_order = group_order + ([group_missing_label] if group_missing else [])
     if ax is not None and len(features) != 1:
         raise ValueError("ax is only supported for a single feature.")
-    if figsize is not None and (
-        len(figsize) != 2 or not np.isfinite(figsize).all() or min(figsize) <= 0
-    ):
-        raise ValueError("figsize must contain two finite, positive dimensions.")
+    figsize = validate_figsize(figsize)
 
     try:
-        if layer is None:
-            values = sc.get.obs_df(adata, keys=features, use_raw=raw)
-        else:
-            values = sc.get.obs_df(adata, keys=features, layer=layer, use_raw=False)
+        values = obs_df(adata, keys=features, layer=layer, use_raw=raw, use=use)
     except KeyError as exc:
         raise ValueError(f"feature lookup failed: {exc}") from exc
     for feature in features:
         if feature not in values:
             raise ValueError(f"Feature {feature!r} not found.")
-        if not pd.api.types.is_numeric_dtype(values[feature]):
-            raise ValueError(f"Feature {feature!r} must be numeric.")
+        if not pd.api.types.is_numeric_dtype(
+            values[feature]
+        ) or pd.api.types.is_complex_dtype(values[feature]):
+            raise ValueError(f"Feature {feature!r} must be real and numeric.")
     if not np.isfinite(values.to_numpy(dtype=float)).any():
         raise ValueError("Features contain no finite values to plot.")
 
